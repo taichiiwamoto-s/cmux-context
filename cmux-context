@@ -1,16 +1,35 @@
 #!/usr/bin/env bash
-# cmux-context - 全ワークスペースのClaude Codeコンテキスト使用量を可視化
+# cmux-context - Visualize Claude Code context usage across all cmux workspaces
 set -uo pipefail
 
-# --- 色定義 ---
-G="\033[38;2;151;201;195m"  # 緑（低使用率）
-Y="\033[38;2;229;192;123m"  # 黄（中使用率）
-R="\033[38;2;224;108;117m"  # 赤（高使用率）
-D="\033[38;2;74;88;92m"     # グレー
-W="\033[1m"                 # 太字
-O="\033[0m"                 # リセット
+VERSION="1.0.0"
 
-# 使用率に応じた色
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: cmux-context"
+    echo ""
+    echo "Display Claude Code context usage for all cmux workspaces."
+    echo "Requires cmux (https://cmux.co) to be installed and running."
+    echo ""
+    echo "Options:"
+    echo "  -h, --help      Show this help message"
+    echo "  -v, --version   Show version"
+    exit 0
+fi
+
+if [[ "${1:-}" == "-v" || "${1:-}" == "--version" ]]; then
+    echo "cmux-context $VERSION"
+    exit 0
+fi
+
+# --- Colors ---
+G="\033[38;2;151;201;195m"  # green (low usage)
+Y="\033[38;2;229;192;123m"  # yellow (medium usage)
+R="\033[38;2;224;108;117m"  # red (high usage)
+D="\033[38;2;74;88;92m"     # dim gray
+W="\033[1m"                 # bold
+O="\033[0m"                 # reset
+
+# Color based on usage percentage
 pct_color() {
     local pct=$1
     if (( pct >= 80 )); then echo -ne "$R"
@@ -19,7 +38,7 @@ pct_color() {
     fi
 }
 
-# バー描画（20幅）
+# Draw progress bar (20 chars wide)
 draw_bar() {
     local pct=$1 width=20
     local filled=$(( (pct * width + 50) / 100 ))
@@ -32,43 +51,43 @@ draw_bar() {
     echo -n "$bar"
 }
 
-# --- メイン ---
+# --- Main ---
 
-# ワークスペース一覧を取得
+# Get all workspaces
 workspaces=$(cmux list-workspaces 2>/dev/null) || {
-    echo "Error: cmuxに接続できません" >&2; exit 1
+    echo "Error: Cannot connect to cmux. Is cmux running?" >&2
+    echo "Install cmux from https://cmux.co" >&2; exit 1
 }
 
-# ヘッダー
+# Header
 echo ""
 printf "${W}  cmux Context Monitor${O}\n"
 printf "${D}  ────────────────────────────────────────────────────────${O}\n"
 
-# レート制限を1回だけ保存用
+# Rate limit info (saved from first workspace)
 rate_5h=""
 rate_7d=""
 
-# 各ワークスペースを処理
+# Process each workspace
 while IFS= read -r line; do
-    # パース: "* workspace:10  ⠐ Claude Code  [selected]" or "  workspace:1  VI分析ツール"
+    # Parse workspace ref (e.g. "workspace:10")
     ws_ref=$(echo "$line" | grep -oE 'workspace:[0-9]+') || true
     [ -z "$ws_ref" ] && continue
 
-    # ワークスペース名を取得（ref以降、[...]タグを除去）
+    # Extract workspace name (strip ref prefix and [...] tags)
     ws_name=$(echo "$line" | sed -E 's/^[* ]+workspace:[0-9]+[[:space:]]*//' | sed -E 's/\[.*\]//g' | xargs)
-    # Braille/アクティビティインジケータを除去（U+2800-U+28FF）
+    # Strip Braille activity indicators (U+2800-U+28FF)
     ws_name=$(echo "$ws_name" | sed $'s/[\xe2\xa0\x80-\xe2\xa3\xbf]//g' | sed 's/^[[:space:]]*//')
     [ -z "$ws_name" ] && ws_name="$ws_ref"
 
-    # 現在のワークスペースかどうか
+    # Check if this is the currently selected workspace
     is_current=""
     echo "$line" | grep -q '^\*' && is_current=" ◀"
 
-    # 画面を読み取り
+    # Read workspace screen
     screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || continue
 
-    # Claude Codeのステータスラインからコンテキスト%をパース
-    # フォーマット: "  24% | +0/-0"
+    # Parse context % from Claude Code status line (e.g. "  24% | +0/-0")
     ctx_line=$(echo "$screen" | grep -E '^ *[0-9]+% \|' | tail -1) || true
     [ -z "$ctx_line" ] && continue
 
@@ -77,17 +96,17 @@ while IFS= read -r line; do
 
     lines_info=$(echo "$ctx_line" | grep -oE '\+[0-9]+/-[0-9]+' || echo "")
 
-    # モデル名を取得
+    # Get model name
     model=$(echo "$screen" | grep -oE '(Opus|Sonnet|Haiku) [0-9.]+' | head -1) || true
     [ -z "$model" ] && model="unknown"
 
-    # レート制限を保存（最初に見つけたもの）
+    # Save rate limits (from the first workspace that has them)
     if [ -z "$rate_5h" ]; then
         rate_5h=$(echo "$screen" | grep -E '5h .*(▰|▱)' | head -1) || true
         rate_7d=$(echo "$screen" | grep -E '7d .*(▰|▱)' | head -1) || true
     fi
 
-    # 表示
+    # Display
     color=$(pct_color "$ctx_pct")
     printf "\n"
     printf "  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
@@ -100,7 +119,7 @@ while IFS= read -r line; do
 
 done <<< "$workspaces"
 
-# レート制限表示
+# Rate limits
 if [ -n "$rate_5h" ] || [ -n "$rate_7d" ]; then
     printf "\n${D}  ────────────────────────────────────────────────────────${O}\n"
     printf "  ${W}Rate Limits${O} ${D}(shared)${O}\n"
