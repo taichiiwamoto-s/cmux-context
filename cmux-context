@@ -2,7 +2,7 @@
 # cmux-context - Visualize Claude Code context usage across all cmux workspaces
 set -uo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 # Per-user temp files (avoid symlink attacks and multi-user collisions)
 _tmpdir="${TMPDIR:-/tmp}/cmux-context-${UID}"
@@ -72,7 +72,7 @@ show_help() {
     echo ""
     echo "Options (for start):"
     echo "  --interval N    Update interval in seconds (default: $DEFAULT_INTERVAL)"
-    echo "  --no-progress   Hide progress bar (show status pill only)"
+    echo "  --progress      Show progress bar (default: status pill only)"
     echo "  -h, --help      Show this help message"
     echo "  -v, --version   Show version"
     echo ""
@@ -80,7 +80,7 @@ show_help() {
     echo "  cmux-context                        # one-shot terminal display"
     echo "  cmux-context start                  # start sidebar daemon (10s interval)"
     echo "  cmux-context start --interval 5     # 5s interval"
-    echo "  cmux-context start --no-progress    # status pill only, no progress bar"
+    echo "  cmux-context start --progress       # status pill + progress bar"
     echo "  cmux-context stop                   # stop daemon, clear sidebar"
 }
 
@@ -95,7 +95,7 @@ get_workspace_refs() {
 parse_context_pct() {
     local screen="$1"
     local ctx_line
-    ctx_line=$(echo "$screen" | grep -E '^ *[0-9]+% \|' | tail -1) || true
+    ctx_line=$(echo "$screen" | grep -E '[0-9]+% \|' | tail -1) || true
     [ -z "$ctx_line" ] && return
     local raw
     raw=$(echo "$ctx_line" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
@@ -103,35 +103,90 @@ parse_context_pct() {
     [[ "$raw" =~ ^[0-9]+$ ]] && echo "$raw"
 }
 
+# Get all surface refs in a workspace (across all panes).
+# If $2 is given, only surfaces whose listing line matches $2 are returned.
+get_workspace_surfaces() {
+    local ws_ref="$1"
+    local filter="${2:-}"
+    local panes
+    panes=$(cmux list-panes --workspace "$ws_ref" 2>/dev/null | grep -oE 'pane:[0-9]+') || true
+    [ -z "$panes" ] && return
+
+    while IFS= read -r pane_ref; do
+        [ -z "$pane_ref" ] && continue
+        local output
+        output=$(cmux list-pane-surfaces --workspace "$ws_ref" --pane "$pane_ref" 2>/dev/null) || continue
+        if [ -n "$filter" ]; then
+            echo "$output" | grep "$filter" | grep -oE 'surface:[0-9]+' || true
+        else
+            echo "$output" | grep -oE 'surface:[0-9]+' || true
+        fi
+    done <<< "$panes"
+}
+
 # --- Sidebar update for one workspace ---
 
 update_sidebar_for_workspace() {
     local ws_ref="$1"
-    local screen
-    screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || return
 
-    local ctx_pct
-    ctx_pct=$(parse_context_pct "$screen")
+    # Enumerate Claude Code surfaces across all panes
+    local surfaces
+    surfaces=$(get_workspace_surfaces "$ws_ref" "Claude Code")
 
-    if [ -z "$ctx_pct" ]; then
-        cmux clear-status ctx --workspace "$ws_ref" &>/dev/null || true
+    local idx=0 max_pct=""
+
+    if [ -n "$surfaces" ]; then
+        while IFS= read -r surface_ref; do
+            [ -z "$surface_ref" ] && continue
+            local screen
+            screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
+            local pct
+            pct=$(parse_context_pct "$screen")
+            [ -z "$pct" ] && continue
+
+            local hex_color
+            hex_color=$(pct_hex "$pct")
+            cmux set-status "ctx${idx}" "${pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
+
+            if [ -z "$max_pct" ] || (( pct > max_pct )); then
+                max_pct="$pct"
+            fi
+            (( idx++ )) || true
+        done <<< "$surfaces"
+    else
+        # Fallback: workspace-level read (single surface / no pane info)
+        local screen
+        screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || return
+        local pct
+        pct=$(parse_context_pct "$screen")
+        if [ -n "$pct" ]; then
+            local hex_color
+            hex_color=$(pct_hex "$pct")
+            cmux set-status "ctx0" "${pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
+            max_pct="$pct"
+            (( idx++ )) || true
+        fi
+    fi
+
+    # Clear stale ctx keys (handles instances being closed)
+    for (( i=idx; i<idx+3; i++ )); do
+        cmux clear-status "ctx${i}" --workspace "$ws_ref" &>/dev/null || true
+    done
+    # Clear legacy v2.0 key
+    cmux clear-status ctx --workspace "$ws_ref" &>/dev/null || true
+
+    if [ -z "$max_pct" ]; then
         cmux clear-progress --workspace "$ws_ref" &>/dev/null || true
         return
     fi
 
-    local hex_color
-    hex_color=$(pct_hex "$ctx_pct")
-
-    local progress
-    progress=$(awk -v pct="$ctx_pct" 'BEGIN { printf "%.2f", pct / 100 }')
-
-    cmux set-status ctx "${ctx_pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
-
-    # Show progress bar unless disabled
-    if [ -f "$CONFFILE" ] && grep -q 'no_progress=1' "$CONFFILE" 2>/dev/null; then
-        cmux clear-progress --workspace "$ws_ref" &>/dev/null || true
-    else
+    # Progress bar (opt-in with --progress)
+    if [ -f "$CONFFILE" ] && grep -q 'show_progress=1' "$CONFFILE" 2>/dev/null; then
+        local progress
+        progress=$(awk -v pct="$max_pct" 'BEGIN { printf "%.2f", pct / 100 }')
         cmux set-progress "$progress" --workspace "$ws_ref" &>/dev/null || true
+    else
+        cmux clear-progress --workspace "$ws_ref" &>/dev/null || true
     fi
 }
 
@@ -144,7 +199,11 @@ cleanup_all_workspaces() {
 
     while IFS= read -r ws_ref; do
         [ -z "$ws_ref" ] && continue
+        # Clear all ctx keys (legacy + indexed)
         cmux clear-status ctx --workspace "$ws_ref" &>/dev/null || true
+        for (( i=0; i<5; i++ )); do
+            cmux clear-status "ctx${i}" --workspace "$ws_ref" &>/dev/null || true
+        done
         cmux clear-progress --workspace "$ws_ref" &>/dev/null || true
     done <<< "$ws_refs"
 }
@@ -179,7 +238,7 @@ cmd_run() {
 
 cmd_start() {
     local interval="$DEFAULT_INTERVAL"
-    local no_progress=0
+    local show_progress=0
 
     # Parse options
     while [[ $# -gt 0 ]]; do
@@ -188,8 +247,8 @@ cmd_start() {
                 shift
                 interval="${1:-$DEFAULT_INTERVAL}"
                 ;;
-            --no-progress)
-                no_progress=1
+            --progress)
+                show_progress=1
                 ;;
         esac
         shift
@@ -202,7 +261,7 @@ cmd_start() {
     fi
 
     # Write config
-    echo "no_progress=$no_progress" > "$CONFFILE"
+    echo "show_progress=$show_progress" > "$CONFFILE"
 
     # Check if already running
     if [ -f "$PIDFILE" ]; then
@@ -329,6 +388,37 @@ cmd_status() {
 
 # --- One-shot terminal output (original behavior) ---
 
+# Render one Claude instance line for oneshot output.
+# Usage: _render_oneshot_line <screen_content> <ctx_pct>
+# Side effect: sets rate_5h / rate_7d via dynamic scoping.
+_render_oneshot_line() {
+    local screen="$1"
+    local ctx_pct="$2"
+
+    local ctx_line
+    ctx_line=$(echo "$screen" | grep -E '[0-9]+% \|' | tail -1) || true
+    local lines_info
+    lines_info=$(echo "$ctx_line" | grep -oE '\+[0-9]+/-[0-9]+' || echo "")
+
+    local model
+    model=$(echo "$screen" | grep -oE '(Opus|Sonnet|Haiku) [0-9.]+' | head -1) || true
+    [ -z "$model" ] && model="unknown"
+
+    if [ -z "$rate_5h" ]; then
+        rate_5h=$(echo "$screen" | grep -E '5h .*(▰|▱)' | head -1) || true
+        rate_7d=$(echo "$screen" | grep -E '7d .*(▰|▱)' | head -1) || true
+    fi
+
+    local color
+    color=$(pct_color "$ctx_pct")
+    printf "  ${color}"
+    draw_bar "$ctx_pct"
+    printf " %3d%%${O}" "$ctx_pct"
+    printf "  ${D}${model}${O}"
+    [ -n "$lines_info" ] && printf "  ${D}${lines_info}${O}"
+    printf "\n"
+}
+
 cmd_oneshot() {
     local workspaces
     workspaces=$(cmux list-workspaces 2>/dev/null) || {
@@ -355,39 +445,39 @@ cmd_oneshot() {
         local is_current=""
         echo "$line" | grep -q '^\*' && is_current=" ◀"
 
-        local screen
-        screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || continue
+        # Enumerate Claude Code surfaces across all panes
+        local surfaces
+        surfaces=$(get_workspace_surfaces "$ws_ref" "Claude Code")
 
-        local ctx_line
-        ctx_line=$(echo "$screen" | grep -E '^ *[0-9]+% \|' | tail -1) || true
-        [ -z "$ctx_line" ] && continue
+        local printed_header=0
 
-        local ctx_pct
-        ctx_pct=$(echo "$ctx_line" | grep -oE '[0-9]+%' | head -1 | tr -d '%') || true
-        [ -z "$ctx_pct" ] && continue
+        if [ -n "$surfaces" ]; then
+            while IFS= read -r surface_ref; do
+                [ -z "$surface_ref" ] && continue
+                local screen
+                screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
+                local ctx_pct
+                ctx_pct=$(parse_context_pct "$screen")
+                [ -z "$ctx_pct" ] && continue
 
-        local lines_info
-        lines_info=$(echo "$ctx_line" | grep -oE '\+[0-9]+/-[0-9]+' || echo "")
+                if (( printed_header == 0 )); then
+                    printf "\n  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
+                    printed_header=1
+                fi
 
-        local model
-        model=$(echo "$screen" | grep -oE '(Opus|Sonnet|Haiku) [0-9.]+' | head -1) || true
-        [ -z "$model" ] && model="unknown"
+                _render_oneshot_line "$screen" "$ctx_pct"
+            done <<< "$surfaces"
+        else
+            # Fallback: workspace-level read
+            local screen
+            screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || continue
+            local ctx_pct
+            ctx_pct=$(parse_context_pct "$screen")
+            [ -z "$ctx_pct" ] && continue
 
-        if [ -z "$rate_5h" ]; then
-            rate_5h=$(echo "$screen" | grep -E '5h .*(▰|▱)' | head -1) || true
-            rate_7d=$(echo "$screen" | grep -E '7d .*(▰|▱)' | head -1) || true
+            printf "\n  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
+            _render_oneshot_line "$screen" "$ctx_pct"
         fi
-
-        local color
-        color=$(pct_color "$ctx_pct")
-        printf "\n"
-        printf "  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
-        printf "  ${color}"
-        draw_bar "$ctx_pct"
-        printf " %3d%%${O}" "$ctx_pct"
-        printf "  ${D}${model}${O}"
-        [ -n "$lines_info" ] && printf "  ${D}${lines_info}${O}"
-        printf "\n"
 
     done <<< "$workspaces"
 

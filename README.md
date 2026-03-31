@@ -11,6 +11,7 @@
 - モデル名（Opus / Sonnet / Haiku）と行数を表示
 - レートリミット（5h / 7d）の共有表示
 - **サイドバーモード**: 各ワークスペースのサイドバーに使用率をリアルタイム表示
+- **マルチペイン対応**: 1ワークスペース内の複数Claude Codeインスタンスを個別に検出・表示
 
 ## 動作要件
 
@@ -45,7 +46,7 @@ cmux-context
 ```bash
 cmux-context start                  # 起動（デフォルト10秒間隔）
 cmux-context start --interval 5     # 5秒間隔で起動
-cmux-context start --no-progress    # プログレスバー非表示（ステータスpillのみ）
+cmux-context start --progress       # プログレスバーも表示
 cmux-context status                 # デーモンの動作状態を確認
 cmux-context stop                   # 停止 + サイドバーをクリア
 ```
@@ -53,7 +54,7 @@ cmux-context stop                   # 停止 + サイドバーをクリア
 `start` を実行すると、専用ワークスペース（`ctx-monitor`）が作成され、バックグラウンドで更新ループが動作します。各ワークスペースのサイドバーに以下が表示されます:
 
 - **ステータスpill**: 🧠 XX%（使用率に応じて緑/黄/赤）
-- **プログレスバー**: 視覚的なバー表示（`--no-progress` で非表示可）
+- **プログレスバー**: `--progress` オプションで追加表示可
 
 `stop` を実行すると、デーモン停止・サイドバーのクリア・専用ワークスペースの削除がすべて自動で行われます。
 
@@ -78,10 +79,11 @@ cmux-context stop                   # 停止 + サイドバーをクリア
 ## 仕組み
 
 1. `cmux list-workspaces` で全ワークスペースを検出
-2. `cmux read-screen` で各ワークスペースの画面を読み取り
-3. Claude Code のステータスライン（`XX% | +N/-N`）からコンテキスト%・モデル名・行数をパース
-4. **ワンショット**: ターミナルに色分けプログレスバーを描画
-5. **サイドバーモード**: `cmux set-status` / `cmux set-progress` でサイドバーを更新
+2. `cmux list-panes` / `list-pane-surfaces` で各ワークスペース内の全サーフェスを列挙
+3. `cmux read-screen --surface` で各Claude Codeサーフェスの画面を読み取り
+4. ステータスライン（`XX% | +N/-N`）からコンテキスト%・モデル名・行数をパース
+5. **ワンショット**: ターミナルに色分けプログレスバーを描画
+6. **サイドバーモード**: `cmux set-status` でステータスpillを更新（複数インスタンスは個別表示）
 
 ### 色の閾値
 
