@@ -128,51 +128,29 @@ get_workspace_surfaces() {
 
 update_sidebar_for_workspace() {
     local ws_ref="$1"
-
-    # Enumerate Claude Code surfaces across all panes
     local surfaces
     surfaces=$(get_workspace_surfaces "$ws_ref" "Claude Code")
+    [ -z "$surfaces" ] && return
 
     local idx=0 max_pct=""
 
-    if [ -n "$surfaces" ]; then
-        while IFS= read -r surface_ref; do
-            [ -z "$surface_ref" ] && continue
-            local screen
-            screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
-            local pct
-            pct=$(parse_context_pct "$screen")
-            [ -z "$pct" ] && continue
-
-            local hex_color
-            hex_color=$(pct_hex "$pct")
-            cmux set-status "ctx${idx}" "${pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
-
-            if [ -z "$max_pct" ] || (( pct > max_pct )); then
-                max_pct="$pct"
-            fi
-            (( idx++ )) || true
-        done <<< "$surfaces"
-    else
-        # Fallback: workspace-level read (single surface / no pane info)
+    while IFS= read -r surface_ref; do
+        [ -z "$surface_ref" ] && continue
         local screen
-        screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || return
+        screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
         local pct
         pct=$(parse_context_pct "$screen")
-        if [ -n "$pct" ]; then
-            local hex_color
-            hex_color=$(pct_hex "$pct")
-            cmux set-status "ctx0" "${pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
-            max_pct="$pct"
-            (( idx++ )) || true
-        fi
-    fi
+        [ -z "$pct" ] && continue
 
-    # Clear stale ctx keys (handles instances being closed)
+        cmux set-status "ctx${idx}" "${pct}%" --icon brain --color "$(pct_hex "$pct")" --workspace "$ws_ref" &>/dev/null || true
+        if [ -z "$max_pct" ] || (( pct > max_pct )); then max_pct="$pct"; fi
+        (( idx++ )) || true
+    done <<< "$surfaces"
+
+    # Clear stale ctx keys
     for (( i=idx; i<idx+3; i++ )); do
         cmux clear-status "ctx${i}" --workspace "$ws_ref" &>/dev/null || true
     done
-    # Clear legacy v2.0 key
     cmux clear-status ctx --workspace "$ws_ref" &>/dev/null || true
 
     if [ -z "$max_pct" ]; then
@@ -182,9 +160,7 @@ update_sidebar_for_workspace() {
 
     # Progress bar (opt-in with --progress)
     if [ -f "$CONFFILE" ] && grep -q 'show_progress=1' "$CONFFILE" 2>/dev/null; then
-        local progress
-        progress=$(awk -v pct="$max_pct" 'BEGIN { printf "%.2f", pct / 100 }')
-        cmux set-progress "$progress" --workspace "$ws_ref" &>/dev/null || true
+        cmux set-progress "$(awk -v pct="$max_pct" 'BEGIN { printf "%.2f", pct / 100 }')" --workspace "$ws_ref" &>/dev/null || true
     else
         cmux clear-progress --workspace "$ws_ref" &>/dev/null || true
     fi
@@ -392,14 +368,10 @@ cmd_status() {
 # Usage: _render_oneshot_line <screen_content> <ctx_pct>
 # Side effect: sets rate_5h / rate_7d via dynamic scoping.
 _render_oneshot_line() {
-    local screen="$1"
-    local ctx_pct="$2"
+    local screen="$1" ctx_pct="$2"
 
-    local ctx_line
-    ctx_line=$(echo "$screen" | grep -E '[0-9]+% \|' | tail -1) || true
     local lines_info
-    lines_info=$(echo "$ctx_line" | grep -oE '\+[0-9]+/-[0-9]+' || echo "")
-
+    lines_info=$(echo "$screen" | grep -oE '\+[0-9]+/-[0-9]+' | tail -1) || true
     local model
     model=$(echo "$screen" | grep -oE '(Opus|Sonnet|Haiku) [0-9.]+' | head -1) || true
     [ -z "$model" ] && model="unknown"
@@ -409,12 +381,9 @@ _render_oneshot_line() {
         rate_7d=$(echo "$screen" | grep -E '7d .*(▰|▱)' | head -1) || true
     fi
 
-    local color
-    color=$(pct_color "$ctx_pct")
-    printf "  ${color}"
+    printf "  $(pct_color "$ctx_pct")"
     draw_bar "$ctx_pct"
-    printf " %3d%%${O}" "$ctx_pct"
-    printf "  ${D}${model}${O}"
+    printf " %3d%%${O}  ${D}%s${O}" "$ctx_pct" "$model"
     [ -n "$lines_info" ] && printf "  ${D}${lines_info}${O}"
     printf "\n"
 }
@@ -445,39 +414,27 @@ cmd_oneshot() {
         local is_current=""
         echo "$line" | grep -q '^\*' && is_current=" ◀"
 
-        # Enumerate Claude Code surfaces across all panes
         local surfaces
         surfaces=$(get_workspace_surfaces "$ws_ref" "Claude Code")
+        [ -z "$surfaces" ] && continue
 
         local printed_header=0
 
-        if [ -n "$surfaces" ]; then
-            while IFS= read -r surface_ref; do
-                [ -z "$surface_ref" ] && continue
-                local screen
-                screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
-                local ctx_pct
-                ctx_pct=$(parse_context_pct "$screen")
-                [ -z "$ctx_pct" ] && continue
-
-                if (( printed_header == 0 )); then
-                    printf "\n  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
-                    printed_header=1
-                fi
-
-                _render_oneshot_line "$screen" "$ctx_pct"
-            done <<< "$surfaces"
-        else
-            # Fallback: workspace-level read
+        while IFS= read -r surface_ref; do
+            [ -z "$surface_ref" ] && continue
             local screen
-            screen=$(cmux read-screen --workspace "$ws_ref" --lines 10 2>/dev/null) || continue
+            screen=$(cmux read-screen --workspace "$ws_ref" --surface "$surface_ref" --lines 10 2>/dev/null) || continue
             local ctx_pct
             ctx_pct=$(parse_context_pct "$screen")
             [ -z "$ctx_pct" ] && continue
 
-            printf "\n  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
+            if (( printed_header == 0 )); then
+                printf "\n  ${W}%-28s${O}${D}${is_current}${O}\n" "$ws_name"
+                printed_header=1
+            fi
+
             _render_oneshot_line "$screen" "$ctx_pct"
-        fi
+        done <<< "$surfaces"
 
     done <<< "$workspaces"
 
