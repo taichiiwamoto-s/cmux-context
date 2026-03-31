@@ -1,64 +1,63 @@
 # cmux-context
 
-A terminal dashboard that visualizes Claude Code context usage across all [cmux](https://cmux.co) workspaces — with optional sidebar integration.
+[cmux](https://cmux.co) の全ワークスペースにおける Claude Code のコンテキスト使用率を可視化する CLI ツール。サイドバーへの常時表示にも対応。
 
 ![Screenshot](screenshot.png)
 
-## Features
+## 特徴
 
-- Shows context usage (%) for every active Claude Code workspace
-- Color-coded progress bars (green < 50%, yellow 50-80%, red >= 80%)
-- Displays model name (Opus / Sonnet / Haiku) and line counts
-- Shows shared rate limits (5h / 7d)
-- **Sidebar mode**: continuously updates each workspace's sidebar with context usage (status pill + progress bar)
+- 全ワークスペースのコンテキスト使用率（%）を一覧表示
+- 色分けプログレスバー（緑 < 50% / 黄 50-79% / 赤 >= 80%）
+- モデル名（Opus / Sonnet / Haiku）と行数を表示
+- レートリミット（5h / 7d）の共有表示
+- **サイドバーモード**: 各ワークスペースのサイドバーに使用率をリアルタイム表示
 
-## Requirements
+## 動作要件
 
-- [cmux](https://cmux.co) (macOS)
+- [cmux](https://cmux.co)（macOS）
 - Bash 4+
-- Claude Code status line enabled in each workspace
+- 各ワークスペースで Claude Code のステータスラインが有効であること
 
-## Installation
-
-### Manual
+## インストール
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iwamototaichi/cmux-context/main/cmux-context -o /usr/local/bin/cmux-context
+curl -fsSL https://raw.githubusercontent.com/taichiiwamoto-s/cmux-context/main/cmux-context -o /usr/local/bin/cmux-context
 chmod +x /usr/local/bin/cmux-context
 ```
 
-Or clone and symlink:
+または clone してシンボリックリンク:
 
 ```bash
-git clone https://github.com/iwamototaichi/cmux-context.git
+git clone https://github.com/taichiiwamoto-s/cmux-context.git
 ln -s "$(pwd)/cmux-context/cmux-context" /usr/local/bin/cmux-context
 ```
 
-## Usage
+## 使い方
 
-### One-shot (terminal output)
+### ワンショット（ターミナル出力）
 
 ```bash
 cmux-context
 ```
 
-### Sidebar daemon
+### サイドバー常駐モード
 
 ```bash
-cmux-context start              # start (10s interval, default)
-cmux-context start --interval 5 # start with 5s interval
-cmux-context status             # check if daemon is running
-cmux-context stop               # stop daemon, clear sidebar
+cmux-context start                  # 起動（デフォルト10秒間隔）
+cmux-context start --interval 5     # 5秒間隔で起動
+cmux-context start --no-progress    # プログレスバー非表示（ステータスpillのみ）
+cmux-context status                 # デーモンの動作状態を確認
+cmux-context stop                   # 停止 + サイドバーをクリア
 ```
 
-The `start` command creates a dedicated cmux workspace (`ctx-monitor`) that runs a background update loop. Each workspace's sidebar displays:
+`start` を実行すると、専用ワークスペース（`ctx-monitor`）が作成され、バックグラウンドで更新ループが動作します。各ワークスペースのサイドバーに以下が表示されます:
 
-- **Status pill**: `🧠 XX%` with color (green/yellow/red)
-- **Progress bar**: visual bar with "Context XX%" label
+- **ステータスpill**: 🧠 XX%（使用率に応じて緑/黄/赤）
+- **プログレスバー**: 視覚的なバー表示（`--no-progress` で非表示可）
 
-The `stop` command kills the daemon, removes all sidebar indicators, and closes the workspace.
+`stop` を実行すると、デーモン停止・サイドバーのクリア・専用ワークスペースの削除がすべて自動で行われます。
 
-### Example Output (one-shot)
+### 出力例（ワンショット）
 
 ```
   cmux Context Monitor
@@ -76,22 +75,22 @@ The `stop` command kills the daemon, removes all sidebar indicators, and closes 
   7d ▰▱▱▱▱▱▱▱▱▱
 ```
 
-## How It Works
+## 仕組み
 
-1. Queries `cmux list-workspaces` to discover all workspaces
-2. Reads the screen of each workspace via `cmux read-screen`
-3. Parses the Claude Code status line for context percentage, model, and line info
-4. **One-shot**: Renders a color-coded progress bar per workspace in the terminal
-5. **Daemon**: Updates each workspace's sidebar via `cmux set-status` and `cmux set-progress`
+1. `cmux list-workspaces` で全ワークスペースを検出
+2. `cmux read-screen` で各ワークスペースの画面を読み取り
+3. Claude Code のステータスライン（`XX% | +N/-N`）からコンテキスト%・モデル名・行数をパース
+4. **ワンショット**: ターミナルに色分けプログレスバーを描画
+5. **サイドバーモード**: `cmux set-status` / `cmux set-progress` でサイドバーを更新
 
-### Color Thresholds
+### 色の閾値
 
-| Usage   | Color   | Hex       |
-|---------|---------|-----------|
-| < 50%   | Green   | `#97C9C3` |
-| 50-79%  | Yellow  | `#E5C07B` |
-| >= 80%  | Red     | `#E06C75` |
+| 使用率 | 色 | カラーコード |
+|--------|------|-----------|
+| < 50%  | 緑   | `#97C9C3` |
+| 50-79% | 黄   | `#E5C07B` |
+| >= 80% | 赤   | `#E06C75` |
 
-## License
+## ライセンス
 
 [MIT](LICENSE)
