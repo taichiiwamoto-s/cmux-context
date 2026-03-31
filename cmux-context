@@ -3,9 +3,15 @@
 set -uo pipefail
 
 VERSION="2.0.0"
-PIDFILE="/tmp/cmux-context-daemon.pid"
-WSFILE="/tmp/cmux-context-daemon.ws"
-CONFFILE="/tmp/cmux-context-daemon.conf"
+
+# Per-user temp files (avoid symlink attacks and multi-user collisions)
+_tmpdir="${TMPDIR:-/tmp}/cmux-context-${UID}"
+mkdir -p "$_tmpdir" 2>/dev/null
+chmod 700 "$_tmpdir" 2>/dev/null
+PIDFILE="$_tmpdir/daemon.pid"
+WSFILE="$_tmpdir/daemon.ws"
+CONFFILE="$_tmpdir/daemon.conf"
+
 DEFAULT_INTERVAL=10
 
 # --- Colors (terminal output) ---
@@ -91,7 +97,10 @@ parse_context_pct() {
     local ctx_line
     ctx_line=$(echo "$screen" | grep -E '^ *[0-9]+% \|' | tail -1) || true
     [ -z "$ctx_line" ] && return
-    echo "$ctx_line" | grep -oE '[0-9]+%' | head -1 | tr -d '%'
+    local raw
+    raw=$(echo "$ctx_line" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
+    # Validate: must be a non-negative integer
+    [[ "$raw" =~ ^[0-9]+$ ]] && echo "$raw"
 }
 
 # --- Sidebar update for one workspace ---
@@ -114,7 +123,7 @@ update_sidebar_for_workspace() {
     hex_color=$(pct_hex "$ctx_pct")
 
     local progress
-    progress=$(awk "BEGIN { printf \"%.2f\", $ctx_pct / 100 }")
+    progress=$(awk -v pct="$ctx_pct" 'BEGIN { printf "%.2f", pct / 100 }')
 
     cmux set-status ctx "${ctx_pct}%" --icon brain --color "$hex_color" --workspace "$ws_ref" &>/dev/null || true
 
@@ -186,6 +195,12 @@ cmd_start() {
         shift
     done
 
+    # Validate interval
+    if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval < 1 )); then
+        echo "Error: --interval must be a positive integer." >&2
+        exit 1
+    fi
+
     # Write config
     echo "no_progress=$no_progress" > "$CONFFILE"
 
@@ -206,13 +221,16 @@ cmd_start() {
         exit 1
     }
 
-    # Resolve self path
+    # Resolve self path (absolute)
     local self
-    self=$(command -v cmux-context 2>/dev/null || echo "$0")
+    self=$(command -v cmux-context 2>/dev/null)
+    if [ -z "$self" ]; then
+        self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    fi
 
     # Create dedicated workspace running the daemon
     local ws_result
-    ws_result=$(cmux new-workspace --command "'$self' _run $interval" 2>&1)
+    ws_result=$(cmux new-workspace --command "\"$self\" _run $interval" 2>&1)
     local ws_ref
     ws_ref=$(echo "$ws_result" | grep -oE 'workspace:[0-9]+' || true)
 
