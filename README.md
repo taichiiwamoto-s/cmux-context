@@ -1,6 +1,6 @@
 # cmux-context
 
-A terminal dashboard that visualizes Claude Code context usage across all [cmux](https://cmux.co) workspaces.
+A terminal dashboard that visualizes Claude Code context usage across all [cmux](https://cmux.co) workspaces — with optional sidebar integration.
 
 ![Screenshot](screenshot.png)
 
@@ -10,6 +10,7 @@ A terminal dashboard that visualizes Claude Code context usage across all [cmux]
 - Color-coded progress bars (green < 50%, yellow 50-80%, red >= 80%)
 - Displays model name (Opus / Sonnet / Haiku) and line counts
 - Shows shared rate limits (5h / 7d)
+- **Sidebar mode**: continuously updates each workspace's sidebar with context usage (status pill + progress bar)
 
 ## Requirements
 
@@ -35,11 +36,29 @@ ln -s "$(pwd)/cmux-context/cmux-context" /usr/local/bin/cmux-context
 
 ## Usage
 
+### One-shot (terminal output)
+
 ```bash
 cmux-context
 ```
 
-### Example Output
+### Sidebar daemon
+
+```bash
+cmux-context start              # start (10s interval, default)
+cmux-context start --interval 5 # start with 5s interval
+cmux-context status             # check if daemon is running
+cmux-context stop               # stop daemon, clear sidebar
+```
+
+The `start` command creates a dedicated cmux workspace (`ctx-monitor`) that runs a background update loop. Each workspace's sidebar displays:
+
+- **Status pill**: `🧠 XX%` with color (green/yellow/red)
+- **Progress bar**: visual bar with "Context XX%" label
+
+The `stop` command kills the daemon, removes all sidebar indicators, and closes the workspace.
+
+### Example Output (one-shot)
 
 ```
   cmux Context Monitor
@@ -62,7 +81,16 @@ cmux-context
 1. Queries `cmux list-workspaces` to discover all workspaces
 2. Reads the screen of each workspace via `cmux read-screen`
 3. Parses the Claude Code status line for context percentage, model, and line info
-4. Renders a color-coded progress bar per workspace
+4. **One-shot**: Renders a color-coded progress bar per workspace in the terminal
+5. **Daemon**: Updates each workspace's sidebar via `cmux set-status` and `cmux set-progress`
+
+### Color Thresholds
+
+| Usage   | Color   | Hex       |
+|---------|---------|-----------|
+| < 50%   | Green   | `#97C9C3` |
+| 50-79%  | Yellow  | `#E5C07B` |
+| >= 80%  | Red     | `#E06C75` |
 
 ## License
 
