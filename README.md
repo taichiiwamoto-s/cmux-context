@@ -16,15 +16,25 @@
 ## 動作要件
 
 - [cmux](https://cmux.co)（macOS）
-- Bash 4+
 - 各ワークスペースで Claude Code のステータスラインが有効であること
+
+### ステータスラインの有効化
+
+Claude Code のステータスライン（コンテキスト使用率やモデル名が表示される領域）が無効だとデータを取得できません。有効化するには、Claude Code 内で以下を実行してください:
+
+```
+/statusline
+```
+
+表示される設定画面で `Enabled` を選択すれば完了です。
 
 ## インストール
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/taichiiwamoto-s/cmux-context/main/cmux-context -o /usr/local/bin/cmux-context
-chmod +x /usr/local/bin/cmux-context
+curl -fsSL https://raw.githubusercontent.com/taichiiwamoto-s/cmux-context/main/cmux-context -o /usr/local/bin/cmux-context && chmod +x /usr/local/bin/cmux-context
 ```
+
+> `/usr/local/bin` に書き込み権限がない場合は `sudo` を付けるか、`~/.local/bin` など別のパスを使用してください。
 
 または clone してシンボリックリンク:
 
